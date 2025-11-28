@@ -1,0 +1,14 @@
+Aphid
+Black Rust
+Blast
+Brown Rust
+Fusarium Head Blight
+Healthy Wheat
+Leaf Blight
+Mildew
+Mite
+Septoria
+Smut
+Stem fly
+Tan spot
+Yellow Rust
