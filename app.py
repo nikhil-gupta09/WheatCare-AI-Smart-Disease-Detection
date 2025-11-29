@@ -1,120 +1,52 @@
 import streamlit as st
-import torch
-import torch.nn as nn
-import torchvision.transforms as transforms
+import numpy as np
+import onnxruntime as rt
 from PIL import Image
-import timm
-import os
+import cv2
 import json
+import os
 
-# ------------------------------
-# Page Config
-# ------------------------------
-st.set_page_config(
-    page_title="WheatGuard AI",
-    page_icon="🌾",
-    layout="wide",
-)
+st.set_page_config(page_title="WheatGuard AI", layout="wide")
 
-# Sidebar Branding
-with st.sidebar:
-    st.title("🌾 WheatGuard AI")
-    st.markdown("Made with ❤️ by **Nikhil & Sanket**")
+# Load class labels
+with open("classes.txt", "r") as f:
+    classes = [line.strip() for line in f.readlines()]
 
-    st.markdown("### Navigate")
-    st.page_link("app.py", label="Detector", icon="🧪")
-    st.markdown("---")
-    st.info("Upload wheat leaf images to detect diseases.")
+# Load ONNX model
+MODEL_PATH = "model/model.onnx"
+session = rt.InferenceSession(MODEL_PATH)
+input_name = session.get_inputs()[0].name
 
-# ------------------------------
-# Load Class Map
-# ------------------------------
-CLASS_MAP_PATH = "class_map.json"
+# Preprocess function
+def preprocess(img):
+    img = img.resize((224, 224))
+    img = np.array(img).astype(np.float32) / 255.0
+    img = (img - 0.5) / 0.5
+    img = np.transpose(img, (2, 0, 1))
+    img = np.expand_dims(img, axis=0)
+    return img
 
-with open(CLASS_MAP_PATH, "r") as f:
-    CLASS_NAMES = json.load(f)
-
-# Convert keys to int if needed
-CLASS_NAMES = {int(k): v for k, v in CLASS_NAMES.items()}
-
-NUM_CLASSES = len(CLASS_NAMES)
-
-# ------------------------------
-# Load Model
-# ------------------------------
-MODEL_PATH = "model/model.pth"
-
-@st.cache_resource
-def load_model():
-    model = timm.create_model(
-        "deit_small_patch16_224",
-        pretrained=False,
-        num_classes=NUM_CLASSES,
-    )
-    state_dict = torch.load(MODEL_PATH, map_location="cpu")
-    model.load_state_dict(state_dict)
-    model.eval()
-    return model
-
-model = load_model()
-
-# ------------------------------
-# Preprocessing
-# ------------------------------
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5], [0.5]),
-])
-
-
+# Prediction function
 def predict(img):
-    img = transform(img).unsqueeze(0)
-    with torch.no_grad():
-        logits = model(img)
-        probs = torch.softmax(logits, dim=1)[0]
-    return probs
+    input_tensor = preprocess(img)
+    output = session.run(None, {input_name: input_tensor})[0]
+    probs = np.squeeze(output)
+    probs = np.exp(probs) / np.sum(np.exp(probs))
+    top2_idx = probs.argsort()[-2:][::-1]
+    top2 = [(classes[i], probs[i]) for i in top2_idx]
+    return top2
 
+# UI
+st.title("🌾 WheatGuard AI — Disease Detector")
+uploaded = st.file_uploader("Upload Wheat Leaf Image", type=["jpg", "jpeg", "png"])
 
-# ------------------------------
-# UI Layout
-# ------------------------------
-st.title("🌾 WheatGuard AI — Smart Leaf Disease Detection")
-st.markdown("Upload an image of a wheat leaf to detect disease using **AI (DeiT Transformer)**")
+if uploaded:
+    img = Image.open(uploaded).convert("RGB")
+    st.image(img, caption="Uploaded Image", use_container_width=True)
 
-uploaded_files = st.file_uploader(
-    "Upload one or multiple images",
-    type=["jpg", "jpeg", "png"],
-    accept_multiple_files=True
-)
+    top2 = predict(img)
 
-if uploaded_files:
-    cols = st.columns(2)
-    idx = 0
-
-    for file in uploaded_files:
-        img = Image.open(file).convert("RGB")
-        probs = predict(img)
-
-        top3 = torch.topk(probs, 3)
-        pred_idx = top3.indices.tolist()
-        pred_scores = top3.values.tolist()
-
-        with st.container(border=True):
-            if idx % 2 == 0:
-                with cols[0]:
-                    st.image(img, caption=f"Uploaded Image", use_column_width=True)
-            else:
-                with cols[1]:
-                    st.image(img, caption=f"Uploaded Image", use_column_width=True)
-
-            st.subheader("Prediction Results")
-
-            for i in range(3):
-                disease = CLASS_NAMES[pred_idx[i]]
-                confidence = pred_scores[i] * 100
-
-                st.write(f"**{i+1}. {disease} — {confidence:.2f}%**")
-                st.progress(float(confidence / 100))
-
-            idx += 1
+    st.subheader("Top Predictions:")
+    for name, prob in top2:
+        st.write(f"**{name} — {prob*100:.2f}%**")
+        st.progress(float(prob))
